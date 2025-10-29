@@ -122,14 +122,14 @@ class MullerIntuisDataUpdateCoordinator(
 
             # Parse the homestatus structure once to create a room status lookup
             rooms_status_data = {}
-            rooms_list = (
-                raw_homestatus.get("body", {}).get("home", {}).get("rooms", [])
-            )
+            rooms_list = raw_homestatus.get("body", {}).get("home", {}).get("rooms", [])
             if rooms_list:
                 rooms_status_data = {
                     room.get("id"): room for room in rooms_list if room.get("id")
                 }
-                _LOGGER.debug("Found %d rooms in homestatus data", len(rooms_status_data))
+                _LOGGER.debug(
+                    "Found %d rooms in homestatus data", len(rooms_status_data)
+                )
             else:
                 _LOGGER.debug("No rooms found in homestatus data structure")
 
@@ -145,10 +145,11 @@ class MullerIntuisDataUpdateCoordinator(
 
                 # Get room status data from our lookup dictionary
                 room_status = rooms_status_data.get(room_id, {})
-                
+
                 # Create a copy of the room and update with homestatus data
                 updated_room = MullerIntuisRoom(
                     room_id=room.room_id,
+                    home_id=room.home_id,
                     name=room.name,
                     muller_type=room.muller_type,
                     modules=room.modules,

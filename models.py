@@ -75,6 +75,7 @@ class MullerIntuisRoom:
 
     name: str
     room_id: str
+    home_id: str
     modules: list[str]
     muller_type: str | None = None
     room_type: str | None = None
@@ -86,11 +87,14 @@ class MullerIntuisRoom:
     presence: bool | None = None
 
     @classmethod
-    def from_api_data(cls, room_id: str, data: dict[str, Any]) -> MullerIntuisRoom:
+    def from_api_data(
+        cls, room_id: str, home_id: str, data: dict[str, Any]
+    ) -> MullerIntuisRoom:
         """Create device model from API data."""
         return cls(
             name=data.get("name"),
             room_id=room_id,
+            home_id=home_id,
             room_type=data.get("type"),
             modules=data.get("modules", []),
         )
@@ -127,7 +131,9 @@ class MullerIntuisData:
                 _LOGGER.debug(
                     "Processing room %s: %s", room["id"], room.get("name", "Unknown")
                 )
-                room = MullerIntuisRoom.from_api_data(room["id"], room)
+                room = MullerIntuisRoom.from_api_data(
+                    room_id=room["id"], home_id=home["id"], data=room
+                )
                 rooms[room.room_id] = room
 
             for module in home.get("modules", []) or []:
