@@ -1,0 +1,9 @@
+{
+  "domain": "muller_intuis",
+  "name": "Muller Intuis Integration",
+  "documentation": "https://example.com",
+  "dependencies": [],
+  "codeowners": [],
+  "version": "0.1",
+  "requirements": []
+}
