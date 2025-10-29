@@ -14,8 +14,8 @@ DATA_URL = "https://app.muller-intuitiv.net/api/homesdata"
 STATUS_URL = "https://app.muller-intuitiv.net/syncapi/v1/homestatus"
 CONTROL_URL = "https://app.muller-intuitiv.net/syncapi/v1/getconfigs"
 
-# Cache expiry time in seconds (20 seconds)
-CACHE_EXPIRY = 20
+# Cache expiry time in seconds (300 seconds)
+CACHE_EXPIRY = 300
 
 
 class muller_intuisAPI:
@@ -166,7 +166,7 @@ class muller_intuisAPI:
             await self._session.close()
 
     async def set_temperature(
-        self, entity_name: str, temperature: float
+        self, home_id: str, room_id: str, temperature: float
     ) -> dict[str, Any]:
         """Set temperature for entity.
 
@@ -179,21 +179,35 @@ class muller_intuisAPI:
 
         """
         _LOGGER.info("Setting temperature for %s to %.1f°C", entity_name, temperature)
-        headers = {"Authorization": f"Bearer {self._access_token}"}
-        payload = {"device": entity_name, "target_temperature": temperature}
-        async with self._session.post(
-            CONTROL_URL, headers=headers, json=payload
-        ) as resp:
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "home": {
+                "id": home_id,
+                "rooms": [
+                    {
+                        "id": room_id,
+                        "therm_setpoint_mode": "manual",
+                        "therm_setpoint_temperature": temperature,
+                    }
+                ],
+            }
+        }
+
+        async with self._session.post(CONTROL_URL, headers=headers, json=data) as resp:
             # Clear cache after making changes
             self.clear_cache()
             _LOGGER.debug("Temperature set successfully, cache cleared")
             return await resp.json()
 
-    async def set_mode(self, entity_name: str, mode: str) -> dict[str, Any]:
+    async def set_mode(self, home_id: str, room_id: str, mode: str) -> dict[str, Any]:
         """Set mode for entity.
 
         Args:
-            entity_name: Name of the entity
+            home_id: ID of the home
+            room_id: ID of the room
             mode: HVAC mode
 
         Returns:
@@ -201,11 +215,22 @@ class muller_intuisAPI:
 
         """
         _LOGGER.info("Setting HVAC mode for %s to %s", entity_name, mode)
-        headers = {"Authorization": f"Bearer {self._access_token}"}
-        payload = {"device": entity_name, "hvac_mode": mode}
-        async with self._session.post(
-            CONTROL_URL, headers=headers, json=payload
-        ) as resp:
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "home": {
+                "id": home_id,
+                "rooms": [
+                    {
+                        "id": room_id,
+                        "therm_setpoint_mode": mode,
+                    }
+                ],
+            }
+        }
+        async with self._session.post(CONTROL_URL, headers=headers, json=data) as resp:
             # Clear cache after making changes
             self.clear_cache()
             _LOGGER.debug("HVAC mode set successfully, cache cleared")

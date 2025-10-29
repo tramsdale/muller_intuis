@@ -292,7 +292,7 @@ class MullerIntuisClimate(
                     self.room.name,
                 )
                 await self.coordinator.api.set_temperature(
-                    self.room.room_id, temperature
+                    self.house.id, self.room.room_id, temperature
                 )
             else:
                 # Default behavior for entities without specific room
@@ -311,8 +311,8 @@ class MullerIntuisClimate(
         try:
             # Map HVACMode to API mode string
             mode_mapping = {
-                HVACMode.HEAT: "heat",
-                HVACMode.AUTO: "auto",
+                HVACMode.HEAT: "manual",
+                HVACMode.AUTO: "home",
                 HVACMode.OFF: "off",
             }
             mode_str = mode_mapping.get(hvac_mode, "off")
@@ -325,7 +325,9 @@ class MullerIntuisClimate(
                     self.room.room_id,
                     self.room.name,
                 )
-                await self.coordinator.api.set_mode(self.room.room_id, mode_str)
+                await self.coordinator.api.set_mode(
+                    self.home_id, self.room.room_id, mode_str
+                )
             else:
                 # Default behavior for entities without specific room
                 _LOGGER.debug(
