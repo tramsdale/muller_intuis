@@ -29,6 +29,7 @@ class MullerIntuisDevice:
     room_id: str | None = None
     name: str | None = None
     muller_type: str | None = None
+    bridge_id: str | None = None
     current_temperature: float | None = None
     target_temperature: float | None = None
     mode: str | None = None
@@ -45,6 +46,7 @@ class MullerIntuisDevice:
         return cls(
             device_id=device_id,
             name=data.get("name"),
+            bridge_id=data.get("bridge"),
             current_temperature=data.get("current_temperature"),
             target_temperature=data.get("target_temperature"),
             mode=data.get("mode"),

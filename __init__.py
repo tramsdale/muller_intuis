@@ -125,7 +125,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # Load platforms using modern approach
     hass.async_create_task(async_load_platform(hass, "climate", DOMAIN, {}, config))
     hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
-    hass.async_create_task(async_load_platform(hass, "water_heater", DOMAIN, {}, config))
+    hass.async_create_task(
+        async_load_platform(hass, "water_heater", DOMAIN, {}, config)
+    )
     _LOGGER.info("Muller Intuis integration setup completed successfully")
 
     return True

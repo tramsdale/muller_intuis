@@ -16,6 +16,7 @@ STATUS_URL = "https://app.muller-intuitiv.net/syncapi/v1/homestatus"
 CONTROL_URL = "https://app.muller-intuitiv.net/syncapi/v1/getconfigs"
 SETSTATE_URL = "https://app.muller-intuitiv.net/syncapi/v1/setstate"
 MEASURE_URL = "https://app.muller-intuitiv.net/api/gethomemeasure"
+SETCONTACTOR_URL = "https://app.muller-intuitiv.net/api/set_dhw_mode"
 
 # Cache expiry time in seconds (300 seconds)
 CACHE_EXPIRY = 300
@@ -264,9 +265,55 @@ class muller_intuisAPI:
         ) as resp:
             # Clear cache after making changes
             self.clear_cache()
-            _LOGGER.debug("HVAC mode set successfully, cache cleared")
+            _LOGGER.debug("Mode set successfully, cache cleared")
             resp = await resp.json()
             _LOGGER.debug("Response from set_mode: %s", resp)
+            return resp
+
+    async def set_water_heater_mode(
+        self, home_id: str, module_id: str, bridge_id: str, mode: str
+    ) -> dict[str, Any]:
+        """Set mode for water heater module.
+
+        Args:
+            home_id: ID of the home
+            module_id: ID of the water heater module
+            bridge_id: ID of the bridge for the water heater module
+            mode: Contactor mode ('off', 'auto', 'manual')
+
+        Returns:
+            API response
+
+        """
+        _LOGGER.info("Setting water heater mode for module %s to %s", module_id, mode)
+        await self._ensure_valid_token()
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "home": {
+                "id": home_id,
+                "modules": [
+                    {
+                        "bridge": bridge_id,
+                        "id": module_id,
+                        "contactor_mode": mode,
+                    }
+                ],
+            },
+            "app_identifier": "app_muller",
+        }
+        _LOGGER.info("Water heater data structure: %s", data)
+
+        async with self._session.post(
+            SETSTATE_URL, headers=headers, data=json.dumps(data)
+        ) as resp:
+            # Clear cache after making changes
+            self.clear_cache()
+            _LOGGER.debug("Water heater mode set successfully, cache cleared")
+            resp = await resp.json()
+            _LOGGER.debug("Response from set_water_heater_mode: %s", resp)
             return resp
 
     async def get_measure(

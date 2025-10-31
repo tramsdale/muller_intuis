@@ -126,9 +126,15 @@ class MullerIntuisDataUpdateCoordinator(
                 len(config_rooms),
             )
 
-            # Parse the homestatus structure once to create a room status lookup
+            # Parse the homestatus structure once to create room and module status lookups
             rooms_status_data = {}
+            modules_status_data = {}
+
             rooms_list = raw_homestatus.get("body", {}).get("home", {}).get("rooms", [])
+            modules_list = (
+                raw_homestatus.get("body", {}).get("home", {}).get("modules", [])
+            )
+
             if rooms_list:
                 rooms_status_data = {
                     room.get("id"): room for room in rooms_list if room.get("id")
@@ -138,6 +144,18 @@ class MullerIntuisDataUpdateCoordinator(
                 )
             else:
                 _LOGGER.debug("No rooms found in homestatus data structure")
+
+            if modules_list:
+                modules_status_data = {
+                    module.get("id"): module
+                    for module in modules_list
+                    if module.get("id")
+                }
+                _LOGGER.debug(
+                    "Found %d modules in homestatus data", len(modules_status_data)
+                )
+            else:
+                _LOGGER.debug("No modules found in homestatus data structure")
 
             # Update room data with homestatus information
             updated_rooms = {}
@@ -152,6 +170,33 @@ class MullerIntuisDataUpdateCoordinator(
                 # Get room status data from our lookup dictionary
                 room_status = rooms_status_data.get(room_id, {})
 
+                # Check for water heater modules in this room and update their status
+                water_heater_mode = None
+                if room.modules:
+                    for module_id in room.modules:
+                        # Look for this module in the config devices to check if it's a water heater
+                        device = self.config_coordinator.data.devices.get(module_id)
+                        if device and device.muller_type == "NMW":
+                            # This is a water heater module, get its status
+                            module_status = modules_status_data.get(module_id, {})
+                            if module_status:
+                                contactor_mode = module_status.get("contactor_mode")
+                                _LOGGER.debug(
+                                    "Water heater module %s in room %s: contactor_mode=%s",
+                                    module_id,
+                                    room_id,
+                                    contactor_mode,
+                                )
+                                # Use the water heater's contactor_mode as the room's mode for water heater entities
+                                water_heater_mode = contactor_mode
+
+                # For rooms with water heaters, use the water heater mode; otherwise use room thermostat mode
+                effective_mode = (
+                    water_heater_mode
+                    if water_heater_mode
+                    else room_status.get("therm_setpoint_mode")
+                )
+
                 # Create a copy of the room and update with homestatus data
                 updated_room = MullerIntuisRoom(
                     room_id=room.room_id,
@@ -162,7 +207,7 @@ class MullerIntuisDataUpdateCoordinator(
                     # Update these fields from homestatus
                     current_temperature=room_status.get("therm_measured_temperature"),
                     target_temperature=room_status.get("therm_setpoint_temperature"),
-                    mode=room_status.get("therm_setpoint_mode"),
+                    mode=effective_mode,  # Use effective mode (water heater or thermostat)
                     open_window=room_status.get("open_window"),
                     boost_status=room_status.get("boost_status"),
                     presence=room_status.get("presence"),
@@ -170,11 +215,13 @@ class MullerIntuisDataUpdateCoordinator(
 
                 # Log status values for debugging
                 _LOGGER.debug(
-                    "Room %s status: temp=%.1f°C, target=%.1f°C, mode=%s",
+                    "Room %s status: temp=%.1f°C, target=%.1f°C, effective_mode=%s (water_heater_mode=%s, room_mode=%s)",
                     room.room_id,
                     updated_room.current_temperature or 0.0,
                     updated_room.target_temperature or 0.0,
-                    updated_room.mode or "unknown",
+                    effective_mode or "unknown",
+                    water_heater_mode or "none",
+                    room_status.get("therm_setpoint_mode") or "unknown",
                 )
 
                 updated_rooms[room.room_id] = updated_room
