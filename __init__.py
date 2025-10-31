@@ -25,7 +25,7 @@ from .muller_intuisAPI import muller_intuisAPI
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.WATER_HEATER]
 
 # YAML configuration schema
 CONFIG_SCHEMA = vol.Schema(
@@ -125,6 +125,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # Load platforms using modern approach
     hass.async_create_task(async_load_platform(hass, "climate", DOMAIN, {}, config))
     hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
+    hass.async_create_task(async_load_platform(hass, "water_heater", DOMAIN, {}, config))
     _LOGGER.info("Muller Intuis integration setup completed successfully")
 
     return True

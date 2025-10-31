@@ -77,7 +77,7 @@ async def _setup_energy_statistics_handlers(
                     "Config coordinator data available, creating room energy statistics handlers"
                 )
 
-                # Create statistics handlers for each room, but don't add them as entities
+                # Create statistics handlers for each room
                 for room_id, room in config_coordinator.data.rooms.items():
                     _LOGGER.debug(
                         "Creating energy statistics handler for room %s (%s)",
@@ -85,17 +85,54 @@ async def _setup_energy_statistics_handlers(
                         room.name,
                     )
 
-                    # Create the handler
+                    # Log device information for debugging
+                    for module_id in room.modules:
+                        device = config_coordinator.data.devices.get(module_id)
+                        if device:
+                            _LOGGER.debug(
+                                "Room %s module %s: muller_type=%s",
+                                room.name,
+                                module_id,
+                                getattr(device, "muller_type", "unknown"),
+                            )
+
+                    # Determine if this room is a hot water room or heating room
+                    # Check if room has water heater modules or is a utility/bathroom room
+                    has_water_heater_modules = any(
+                        config_coordinator.data.devices.get(
+                            module_id, type("Device", (), {"muller_type": None})()
+                        ).muller_type
+                        in [
+                            "NWH",
+                            "NMW",
+                            "WH",
+                            "WATER_HEATER",
+                        ]  # Known water heater types
+                        for module_id in room.modules
+                    )
+
+                    if has_water_heater_modules:
+                        # Create hot water energy handler for this room
+                        energy_type = "hot_water"
+                        _LOGGER.info("Room %s identified as hot water room", room.name)
+                    else:
+                        # Create heating energy handler for this room
+                        energy_type = "heating"
+                        _LOGGER.debug("Room %s identified as heating room", room.name)
+
                     handler = MullerIntuisEnergyStatisticsHandler(
                         hass=hass,
                         coordinator=energy_coordinator,
+                        home_id=config_coordinator.data.home_id,
                         room_id=room_id,
                         room_name=room.name,
-                        home_id=config_coordinator.data.home_id,
+                        energy_type=energy_type,
                     )
 
                     _LOGGER.debug(
-                        "Created energy statistics handler: %s", handler.unique_id
+                        "Created %s energy statistics handler: %s",
+                        energy_type,
+                        handler.unique_id,
                     )
 
                     # Add coordinator listener for automatic updates
@@ -113,14 +150,28 @@ async def _setup_energy_statistics_handlers(
                     _LOGGER.info(
                         "Energy coordinator has data, triggering statistics processing"
                     )
-                    # Process statistics for all handlers
+                    # Process statistics for all room handlers
                     for room_id, room in config_coordinator.data.rooms.items():
+                        # Determine energy type for this room
+                        has_water_heater_modules = any(
+                            config_coordinator.data.devices.get(
+                                module_id, type("Device", (), {"muller_type": None})()
+                            ).muller_type
+                            in ["NWH", "NMW", "WH", "WATER_HEATER"]
+                            for module_id in room.modules
+                        ) or room.room_type in ["bathroom", "utility"]
+
+                        energy_type = (
+                            "hot_water" if has_water_heater_modules else "heating"
+                        )
+
                         handler = MullerIntuisEnergyStatisticsHandler(
                             hass=hass,
                             coordinator=energy_coordinator,
+                            home_id=config_coordinator.data.home_id,
                             room_id=room_id,
                             room_name=room.name,
-                            home_id=config_coordinator.data.home_id,
+                            energy_type=energy_type,
                         )
                         handler.handle_coordinator_update()
                 else:
@@ -142,26 +193,49 @@ async def _setup_energy_statistics_handlers(
 
 
 class MullerIntuisEnergyStatisticsHandler:
-    """Handler for Muller Intuis energy statistics (no sensor entity, only energy dashboard integration)."""
+    """Unified handler for Muller Intuis energy statistics (heating and hot water)."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         coordinator: MullerIntuisEnergyCoordinator,
-        room_id: str,
-        room_name: str,
         home_id: str,
+        room_id: str | None = None,
+        room_name: str = "",
+        energy_type: str = "heating",
     ) -> None:
-        """Initialize the energy statistics handler."""
+        """Initialize the energy statistics handler.
+
+        Args:
+            hass: Home Assistant instance
+            coordinator: Energy data coordinator
+            home_id: Home ID
+            room_id: Room ID (None for home-wide aggregation)
+            room_name: Room name for entity naming
+            energy_type: Type of energy ("heating" or "hot_water")
+
+        """
         self.hass = hass
         self.coordinator = coordinator
+        self.home_id = home_id
         self.room_id = room_id
         self.room_name = room_name
-        self.home_id = home_id
-        self.unique_id = f"muller_intuis_energy_{home_id}_{room_id}"
-        self.name = f"Muller Intuis Energy {room_name}"
+        self.energy_type = energy_type
 
-        _LOGGER.debug("Created energy statistics handler: %s", self.unique_id)
+        # Set unique ID and name based on energy type and scope
+        if energy_type == "hot_water":
+            self.unique_id = f"muller_intuis_hot_water_energy_{home_id}_{room_id}"
+            self.name = f"Muller Intuis Hot Water Energy {room_name}"
+        elif room_id:
+            self.unique_id = f"muller_intuis_energy_{home_id}_{room_id}"
+            self.name = f"Muller Intuis Energy {room_name}"
+        else:
+            self.unique_id = f"muller_intuis_energy_{home_id}"
+            self.name = "Muller Intuis Energy"
+
+        _LOGGER.debug(
+            "Created energy statistics handler: %s (%s)", self.unique_id, energy_type
+        )
 
     async def _download_existing_statistics(
         self, start_time: datetime, end_time: datetime
@@ -225,7 +299,9 @@ class MullerIntuisEnergyStatisticsHandler:
     def handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator and backfill statistics."""
         _LOGGER.debug(
-            "Energy statistics handler %s received coordinator update", self.unique_id
+            "Energy statistics handler %s (%s) received coordinator update",
+            self.unique_id,
+            self.energy_type,
         )
 
         if self.coordinator.data and self.coordinator.data.measurements:
@@ -247,19 +323,27 @@ class MullerIntuisEnergyStatisticsHandler:
             return
 
         _LOGGER.info(
-            "Backfilling energy statistics for %s with %d measurements",
+            "Backfilling energy statistics for %s (%s) with %d measurements",
             self.unique_id,
+            self.energy_type,
             len(self.coordinator.data.measurements),
         )
 
         # Filter measurements for this specific room and sort by timestamp
+        # Both heating and hot water are now room-based
+        if not self.room_id:
+            _LOGGER.warning("Room-based energy handler missing room_id")
+            return
+
         room_measurements = [
             m for m in self.coordinator.data.measurements if m.room_id == self.room_id
         ]
         room_measurements.sort(key=lambda x: x.timestamp)
 
         if not room_measurements:
-            _LOGGER.debug("No measurements found for room %s", self.room_id)
+            _LOGGER.debug(
+                "No measurements found for room %s (%s)", self.room_id, self.energy_type
+            )
             return
 
         # Calculate time range for downloading existing statistics (last 12 hours + buffer)
@@ -287,9 +371,67 @@ class MullerIntuisEnergyStatisticsHandler:
             )
         )
 
+    async def _download_existing_statistics(
+        self, start_time: datetime, end_time: datetime
+    ) -> dict[str, list]:
+        """Download existing energy statistics from Home Assistant for the last 12 values.
+
+        Args:
+            start_time: Start time for statistics query
+            end_time: End time for statistics query
+
+        Returns:
+            Dictionary with 'mean' and 'sum' statistics from HA database
+
+        """
+        statistic_id = f"muller_intuis:{self.unique_id}"
+
+        _LOGGER.debug(
+            "Downloading existing statistics for %s from %s to %s",
+            statistic_id,
+            start_time,
+            end_time,
+        )
+
+        try:
+            # Download statistics from Home Assistant database
+            instance = get_instance(self.hass)
+            existing_stats = await instance.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_time,
+                end_time,
+                {statistic_id},  # Set of statistic IDs
+                "hour",  # Period
+                None,  # Units (use default)
+                {"mean", "sum"},  # Types we want both mean and sum
+            )
+
+            if statistic_id in existing_stats:
+                stats_data = existing_stats[statistic_id]
+                _LOGGER.debug(
+                    "Found %d existing statistics for %s",
+                    len(stats_data),
+                    statistic_id,
+                )
+                return {
+                    "mean": [s for s in stats_data if "mean" in s],
+                    "sum": [s for s in stats_data if "sum" in s],
+                }
+
+        except (OSError, ValueError) as err:
+            _LOGGER.warning(
+                "Failed to download existing statistics for %s: %s",
+                statistic_id,
+                err,
+            )
+
+        _LOGGER.debug("No existing statistics found for %s", statistic_id)
+        return {"mean": [], "sum": []}
+
     async def _process_energy_with_comparison(
         self,
-        room_measurements: list,
+        measurements: list,
         extended_start: datetime,
         extended_end: datetime,
     ) -> None:
@@ -297,6 +439,10 @@ class MullerIntuisEnergyStatisticsHandler:
         existing_stats = await self._download_existing_statistics(
             extended_start, extended_end
         )
+
+        # Ensure existing_stats is not None
+        if existing_stats is None:
+            existing_stats = {"mean": [], "sum": []}
 
         _LOGGER.debug(
             "Downloaded %d existing mean stats and %d sum stats",
@@ -316,9 +462,7 @@ class MullerIntuisEnergyStatisticsHandler:
             latest_sum_value = latest_sum_stat.get("sum", 0.0)
 
             # Only use this as starting point if it's before our first measurement
-            first_measurement_time = datetime.fromtimestamp(
-                room_measurements[0].timestamp
-            )
+            first_measurement_time = datetime.fromtimestamp(measurements[0].timestamp)
             first_measurement_time = dt_util.as_local(first_measurement_time)
 
             # Ensure both times are datetime objects for comparison
@@ -335,7 +479,7 @@ class MullerIntuisEnergyStatisticsHandler:
                 )
 
         # Process each measurement to create both mean and cumulative sum statistics
-        for measurement in room_measurements:
+        for measurement in measurements:
             try:
                 # Convert timestamp to datetime object
                 timestamp = datetime.fromtimestamp(measurement.timestamp)
