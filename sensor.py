@@ -456,50 +456,89 @@ class MullerIntuisEnergyStatisticsHandler:
 
         # If we have existing sum statistics, start from the last known value
         if existing_stats["sum"]:
-            # Find the latest sum statistic that's before our new data
-            latest_sum_stat = max(existing_stats["sum"], key=lambda x: x["start"])
-            latest_sum_time = latest_sum_stat["start"]
-            latest_sum_value = latest_sum_stat.get("sum", 0.0)
-
-            # Only use this as starting point if it's before our first measurement
+            # Convert first measurement time to datetime for comparison
             first_measurement_time = datetime.fromtimestamp(measurements[0].timestamp)
             first_measurement_time = dt_util.as_local(first_measurement_time)
-
-            # Ensure both times are datetime objects for comparison
-            if isinstance(latest_sum_time, (int, float)):
-                latest_sum_time = datetime.fromtimestamp(latest_sum_time)
-                latest_sum_time = dt_util.as_local(latest_sum_time)
-
-            if latest_sum_time < first_measurement_time:
+            
+            # Find the most recent sum statistic that's before our first measurement
+            # This ensures we start from the correct cumulative baseline
+            valid_stats = []
+            for stat in existing_stats["sum"]:
+                stat_time = stat["start"]
+                # Ensure stat_time is a datetime object
+                if isinstance(stat_time, (int, float)):
+                    stat_time = datetime.fromtimestamp(stat_time)
+                stat_time = dt_util.as_local(stat_time)
+                
+                # Only consider statistics that are before our first new measurement
+                if stat_time < first_measurement_time:
+                    valid_stats.append((stat_time, stat.get("sum", 0.0)))
+            
+            if valid_stats:
+                # Get the most recent valid statistic
+                latest_sum_time, latest_sum_value = max(valid_stats, key=lambda x: x[0])
                 cumulative_sum = latest_sum_value
                 _LOGGER.debug(
                     "Starting cumulative sum from existing value: %f Wh at %s",
                     cumulative_sum,
                     latest_sum_time,
                 )
+            else:
+                _LOGGER.debug(
+                    "No existing sum statistics found before first measurement at %s, starting from 0",
+                    first_measurement_time,
+                )
 
         # Process each measurement to create both mean and cumulative sum statistics
+        # Since API provides hourly differences, no need to detect counter resets
+
         for measurement in measurements:
             try:
                 # Convert timestamp to datetime object
                 timestamp = datetime.fromtimestamp(measurement.timestamp)
                 timestamp = dt_util.as_local(timestamp)
 
+                # API provides hourly consumption directly (not cumulative)
+                hourly_consumption = measurement.energy_wh
+
+                # Sanity check: reject impossibly high hourly consumption (>50kWh per hour)
+                if hourly_consumption > 50000:
+                    _LOGGER.warning(
+                        "Rejecting unrealistic hourly consumption: %f Wh at %s",
+                        hourly_consumption,
+                        timestamp,
+                    )
+                    continue
+
+                # Reject negative consumption (unless it's a small measurement error)
+                if (
+                    hourly_consumption < -100
+                ):  # Allow small negative values (measurement error)
+                    _LOGGER.warning(
+                        "Rejecting negative hourly consumption: %f Wh at %s",
+                        hourly_consumption,
+                        timestamp,
+                    )
+                    continue
+
+                # Ensure non-negative hourly consumption
+                hourly_consumption = max(0, hourly_consumption)
+
                 # Add this hour's energy to cumulative sum
-                cumulative_sum += measurement.energy_wh
+                cumulative_sum += hourly_consumption
 
                 api_statistics.append(
                     {
                         "start": timestamp,
-                        "mean": measurement.energy_wh,  # Per-hour consumption
+                        "mean": hourly_consumption,  # Per-hour consumption from API
                         "sum": cumulative_sum,  # Cumulative consumption
                     }
                 )
 
                 _LOGGER.debug(
-                    "Processed measurement: timestamp=%s, mean=%f Wh, cumulative_sum=%f Wh",
+                    "Processed measurement: timestamp=%s, hourly=%f Wh, cumulative_sum=%f Wh",
                     timestamp,
-                    measurement.energy_wh,
+                    hourly_consumption,
                     cumulative_sum,
                 )
 
