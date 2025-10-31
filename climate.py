@@ -6,6 +6,8 @@ import logging
 from typing import Any
 
 from homeassistant.components.climate import (
+    PRESET_ECO,
+    PRESET_NONE,
     ClimateEntity,
     ClimateEntityFeature,
     HVACAction,
@@ -157,8 +159,10 @@ class MullerIntuisClimate(
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.PRESET_MODE
     )
     _attr_hvac_modes = [HVACMode.HEAT, HVACMode.AUTO, HVACMode.OFF]
+    _attr_preset_modes = [PRESET_NONE, PRESET_ECO]
 
     def __init__(
         self,
@@ -176,6 +180,7 @@ class MullerIntuisClimate(
         self._target_temperature: float | None = None
         self._hvac_mode: HVACMode = HVACMode.OFF
         self._hvac_action: HVACAction = HVACAction.IDLE
+        self._preset_mode: str = PRESET_NONE
 
         # Set proper entity naming following HA guidelines
         if room:
@@ -215,6 +220,11 @@ class MullerIntuisClimate(
         return self._hvac_action
 
     @property
+    def preset_mode(self) -> str:
+        """Return the current preset mode."""
+        return self._preset_mode
+
+    @property
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
@@ -237,19 +247,28 @@ class MullerIntuisClimate(
                 self._current_temperature = updated_room.current_temperature
                 self._target_temperature = updated_room.target_temperature
 
-                # Map mode string to HVACMode
+                # Map mode string to HVACMode and preset
                 if updated_room.mode:
-                    mode_mapping = {
-                        "manual": HVACMode.HEAT,
-                        "home": HVACMode.AUTO,
-                        "off": HVACMode.OFF,
-                        "hg": HVACMode.OFF,
-                    }
-                    self._hvac_mode = mode_mapping.get(
-                        updated_room.mode.lower(), HVACMode.OFF
-                    )
+                    mode = updated_room.mode.lower()
+                    if mode == "hg":
+                        # Frost protection mode maps to HEAT with ECO preset
+                        self._hvac_mode = HVACMode.HEAT
+                        self._preset_mode = PRESET_ECO
+                    elif mode == "manual":
+                        self._hvac_mode = HVACMode.HEAT
+                        self._preset_mode = PRESET_NONE
+                    elif mode == "home":
+                        self._hvac_mode = HVACMode.AUTO
+                        self._preset_mode = PRESET_NONE
+                    elif mode == "off":
+                        self._hvac_mode = HVACMode.OFF
+                        self._preset_mode = PRESET_NONE
+                    else:
+                        self._hvac_mode = HVACMode.OFF
+                        self._preset_mode = PRESET_NONE
                 else:
                     self._hvac_mode = HVACMode.OFF
+                    self._preset_mode = PRESET_NONE
 
                 # Set action based on current state
                 if self._hvac_mode == HVACMode.OFF:
@@ -274,6 +293,7 @@ class MullerIntuisClimate(
             self._target_temperature = None
             self._hvac_mode = HVACMode.OFF
             self._hvac_action = HVACAction.OFF
+            self._preset_mode = PRESET_NONE
 
         super()._handle_coordinator_update()
 
@@ -338,4 +358,45 @@ class MullerIntuisClimate(
             await self.coordinator.async_request_refresh()
         except Exception as err:
             _LOGGER.error("Failed to set HVAC mode to %s: %s", hvac_mode, err)
+            raise
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set new preset mode."""
+        try:
+            if preset_mode == PRESET_ECO:
+                # Frost protection mode
+                mode_str = "hg"
+                _LOGGER.debug("Setting frost protection (ECO preset) mode")
+            else:
+                # PRESET_NONE or other - maintain current HVAC mode behavior
+                if self._hvac_mode == HVACMode.HEAT:
+                    mode_str = "manual"
+                elif self._hvac_mode == HVACMode.AUTO:
+                    mode_str = "home"
+                else:
+                    mode_str = "off"
+                _LOGGER.debug("Setting preset to NONE, using mode: %s", mode_str)
+
+            if self.room:
+                # Set mode for the room using room_id
+                _LOGGER.debug(
+                    "Setting preset mode %s (API mode: %s) for room %s (%s)",
+                    preset_mode,
+                    mode_str,
+                    self.room.room_id,
+                    self.room.name,
+                )
+                await self.coordinator.api.set_mode(
+                    self.room.home_id, self.room.room_id, mode_str
+                )
+            else:
+                # Default behavior for entities without specific room
+                _LOGGER.debug(
+                    "Setting preset mode %s for default climate entity", preset_mode
+                )
+                await self.coordinator.api.set_mode("default", mode_str)
+
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.error("Failed to set preset mode to %s: %s", preset_mode, err)
             raise
