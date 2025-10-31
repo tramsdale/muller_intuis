@@ -15,6 +15,7 @@ DATA_URL = "https://app.muller-intuitiv.net/api/homesdata"
 STATUS_URL = "https://app.muller-intuitiv.net/syncapi/v1/homestatus"
 CONTROL_URL = "https://app.muller-intuitiv.net/syncapi/v1/getconfigs"
 SETSTATE_URL = "https://app.muller-intuitiv.net/syncapi/v1/setstate"
+MEASURE_URL = "https://app.muller-intuitiv.net/api/gethomemeasure"
 
 # Cache expiry time in seconds (300 seconds)
 CACHE_EXPIRY = 300
@@ -221,7 +222,7 @@ class muller_intuisAPI:
             API response
 
         """
-        _LOGGER.info("Setting HVAC mode for %s to %s", entity_name, mode)
+        _LOGGER.info("Setting HVAC mode for room %s to %s", room_id, mode)
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
@@ -246,3 +247,82 @@ class muller_intuisAPI:
             resp = await resp.json()
             _LOGGER.debug("Response from set_mode: %s", resp)
             return resp
+
+    async def get_measure(
+        self,
+        home_id: str,
+        roomlist: list[str],
+        bridgelist: list[str],
+        start_date: int,
+        end_date: int,
+    ) -> dict[str, Any]:
+        """Get historic power/energy measurement data.
+
+        Args:
+            home_id: The home ID to get measurements for
+            start_date: Start timestamp as integer (Unix timestamp)
+            end_date: End timestamp as integer (Unix timestamp)
+
+        Returns:
+            API response containing historic energy measurements
+        """
+        _LOGGER.debug(
+            "Getting measurement data for home %s from %s to %s",
+            home_id,
+            start_date,
+            end_date,
+        )
+        _LOGGER.debug("roomlist: %s", roomlist)
+        _LOGGER.debug("bridgelist: %s", bridgelist)
+
+        if not self._access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        data = {
+            "date_begin": int(start_date),
+            "date_end": int(end_date),
+            "scale": "1hour",
+            "step_time": 60,
+            "app_identifier": "app_muller",
+            "real_time": True,
+            "home": {"id": home_id, "rooms": []},
+        }
+        types = [
+            "sum_energy_elec_hot_water",
+            "sum_energy_elec_heating",
+            "sum_energy_elec",
+            "sum_energy_elec$0",
+            "sum_energy_elec$1",
+            "sum_energy_elec$2",
+        ]
+        # Iterate through roomlist and bridgelist in parallel
+        for room_id, bridge_id in zip(roomlist, bridgelist, strict=True):
+            data["home"]["rooms"].append(
+                {"id": str(room_id), "bridge": str(bridge_id), "type": types}
+            )
+
+        _LOGGER.debug("Final API data structure: %s", data)
+
+        try:
+            async with self._session.post(
+                MEASURE_URL, headers=headers, data=json.dumps(data)
+            ) as resp:
+                # Clear cache after making changes
+                response_data = await resp.json()
+                _LOGGER.debug(
+                    "Received measurement data: %s keys and full response %s",
+                    list(response_data.keys())
+                    if isinstance(response_data, dict)
+                    else "not a dict",
+                    response_data,
+                )
+                return response_data
+
+        except Exception as err:
+            _LOGGER.error("Error fetching measurement data: %s", err)
+            raise

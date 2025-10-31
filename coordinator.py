@@ -10,7 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .models import MullerIntuisData, MullerIntuisDevice, MullerIntuisRoom
+from .models import (
+    MullerIntuisData,
+    MullerIntuisDevice,
+    MullerIntuisRoom,
+    MullerIntuisEnergyData,
+)
 from .muller_intuisAPI import muller_intuisAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -185,3 +190,92 @@ class MullerIntuisDataUpdateCoordinator(
         except Exception as err:
             _LOGGER.error("Error during data update: %s", err)
             raise UpdateFailed(f"Error communicating with API: {err}") from err
+
+
+class MullerIntuisEnergyCoordinator(DataUpdateCoordinator[MullerIntuisEnergyData]):
+    """Coordinator for historic energy measurement data."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        api: muller_intuisAPI,
+        config_coordinator: MullerIntuisConfigCoordinator,
+    ) -> None:
+        """Initialize energy coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_energy_{config_coordinator.data.home_id}",
+            update_interval=timedelta(
+                minutes=2
+            ),  # Update every 6 hours for historic data
+        )
+        self.api = api
+        self.config_coordinator = config_coordinator
+
+    async def _async_update_data(self) -> MullerIntuisEnergyData:
+        """Fetch historic energy measurement data."""
+        # Calculate fresh timestamp range on each call (last 24 hours)
+        from datetime import datetime
+
+        # Set end_date to start of current hour
+        now = datetime.now()
+        end_time = now.replace(minute=0, second=0, microsecond=0)
+        end_date = round(end_time.timestamp())
+        # Set start_date to 24 hours before end_date
+        start_date = round((end_time - timedelta(hours=26)).timestamp())
+
+        home_id = self.config_coordinator.data.home_id
+        _LOGGER.debug(
+            "Starting energy data update for home %s from %s to %s",
+            home_id,
+            start_date,
+            end_date,
+        )
+        try:
+            # Extract room IDs and bridge IDs in the same order
+            roomlist = []
+            bridgelist = []
+            for room in self.config_coordinator.data.rooms.values():
+                if room.modules is not None and room.bridge_id is not None:
+                    roomlist.append(room.room_id)
+                    bridgelist.append(room.bridge_id)
+
+            raw_measurements = await self.api.get_measure(
+                home_id, roomlist, bridgelist, start_date, end_date
+            )
+            if not raw_measurements:
+                _LOGGER.error("No energy measurement data received from API")
+                raise UpdateFailed("No measurement data received from API")
+
+            _LOGGER.debug(
+                "Received energy measurement data: %s keys",
+                list(raw_measurements.keys())
+                if isinstance(raw_measurements, dict)
+                else "not a dict",
+            )
+
+            # Check for error keys in the response
+            if isinstance(raw_measurements, dict) and "error" in raw_measurements:
+                error_info = raw_measurements["error"]
+                _LOGGER.error(
+                    "API returned error in measurement response: %s", error_info
+                )
+                raise UpdateFailed(f"API error: {error_info}")
+
+            # Parse energy data
+            energy_data = MullerIntuisEnergyData.from_api_response(
+                raw_measurements, start_date, end_date, home_id
+            )
+
+            _LOGGER.info(
+                "Successfully updated energy data: %d measurements",
+                len(energy_data.measurements),
+            )
+            return energy_data
+
+        except Exception as err:
+            _LOGGER.error("Error during energy data update: %s", err)
+            raise UpdateFailed(
+                f"Error communicating with measurement API: {err}"
+            ) from err

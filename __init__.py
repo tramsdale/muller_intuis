@@ -14,16 +14,18 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.discovery import async_load_platform
 
+
 from .const import CONF_CLIENT_ID, CONF_CLIENT_SECRET, DOMAIN
 from .coordinator import (
     MullerIntuisConfigCoordinator,
     MullerIntuisDataUpdateCoordinator,
+    MullerIntuisEnergyCoordinator,
 )
 from .muller_intuisAPI import muller_intuisAPI
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.CLIMATE]
+PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR]
 
 # YAML configuration schema
 CONFIG_SCHEMA = vol.Schema(
@@ -97,14 +99,32 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         _LOGGER.error("Failed to fetch initial status data: %s", err)
         return False
 
-    # Store coordinators in hass.data
+    # Create energy coordinator for historic power data
+    energy_coordinator = MullerIntuisEnergyCoordinator(hass, api, config_coordinator)
+    _LOGGER.info("Created energy coordinator for muller_intuis setup")
+
+    # Store coordinators in hass.data first
     hass.data.setdefault(DOMAIN, {})["yaml_setup"] = {
         "config_coordinator": config_coordinator,
         "data_coordinator": data_coordinator,
+        "energy_coordinator": energy_coordinator,
     }
+
+    # Fetch initial energy data (optional, can fail if API doesn't support it yet)
+    try:
+        await energy_coordinator.async_config_entry_first_refresh()
+        _LOGGER.info(
+            "Successfully fetched initial energy measurement data from YAML setup"
+        )
+    except Exception as err:
+        _LOGGER.warning(
+            "Failed to fetch initial energy data from YAML setup, will retry later: %s",
+            err,
+        )
 
     # Load platforms using modern approach
     hass.async_create_task(async_load_platform(hass, "climate", DOMAIN, {}, config))
+    hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
     _LOGGER.info("Muller Intuis integration setup completed successfully")
 
     return True
@@ -146,13 +166,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Fetch initial status data
     await data_coordinator.async_config_entry_first_refresh()
 
+    # Create energy coordinator for historic power data
+    energy_coordinator = MullerIntuisEnergyCoordinator(hass, api, config_coordinator)
+
+    # Store coordinators in hass.data first (before attempting first refresh)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "config_coordinator": config_coordinator,
         "data_coordinator": data_coordinator,
+        "energy_coordinator": energy_coordinator,
     }
 
+    # Fetch initial energy data (optional, can fail if API doesn't support it yet)
+    try:
+        await energy_coordinator.async_config_entry_first_refresh()
+        _LOGGER.info("Successfully fetched initial energy measurement data")
+    except Exception as err:
+        _LOGGER.warning(
+            "Failed to fetch initial energy data, will retry later: %s", err
+        )
+
     # Forward setup to platforms
+    _LOGGER.info("Setting up platforms: %s", PLATFORMS)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _LOGGER.info("Platform setup completed successfully")
 
     return True
 

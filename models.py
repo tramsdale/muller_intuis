@@ -5,8 +5,20 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
+from datetime import datetime
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def format_timestamp_readable(timestamp: Any) -> str:
+    """Convert timestamp to human-readable format if it's a timestamp."""
+    if isinstance(timestamp, (int, float)):
+        try:
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OSError):
+            return str(timestamp)
+    else:
+        return str(timestamp)
 
 
 @dataclass
@@ -85,6 +97,7 @@ class MullerIntuisRoom:
     open_window: bool | None = None
     boost_status: bool | None = None
     presence: bool | None = None
+    bridge_id: str | None = None
 
     @classmethod
     def from_api_data(
@@ -95,6 +108,7 @@ class MullerIntuisRoom:
             name=data.get("name"),
             room_id=room_id,
             home_id=home_id,
+            bridge_id=data.get("therm_relay"),
             room_type=data.get("type"),
             modules=data.get("modules", []),
         )
@@ -190,3 +204,92 @@ class MullerIntuisData:
             return room
         _LOGGER.warning("No rooms found in data model")
         return None
+
+
+@dataclass
+class MullerIntuisEnergyMeasurement:
+    """Model for energy measurement data point."""
+
+    timestamp: str
+    energy_kwh: float
+    room_id: str | None = None
+    device_id: str | None = None
+
+    @classmethod
+    def from_api_data(cls, data: dict[str, Any]) -> MullerIntuisEnergyMeasurement:
+        """Create energy measurement from API data."""
+        return cls(
+            timestamp=data.get("timestamp", ""),
+            energy_kwh=float(data.get("energy", 0.0)),
+            room_id=data.get("room_id"),
+            device_id=data.get("device_id"),
+        )
+
+
+@dataclass
+class MullerIntuisEnergyData:
+    """Model for historic energy measurement data."""
+
+    measurements: list[MullerIntuisEnergyMeasurement]
+    start_date: str
+    end_date: str
+    home_id: str
+
+    @classmethod
+    def from_api_response(
+        cls, response: dict[str, Any], start_date: str, end_date: str, home_id: str
+    ) -> MullerIntuisEnergyData:
+        """Create energy data model from API response."""
+        measurements = []
+
+        # Parse measurements from API response
+        roomlist = response.get("body", {}).get("home", {}).get("rooms", [])
+        for room in roomlist:
+            _LOGGER.debug("Found room in energy data: %s", room.get("id", "Unknown"))
+            for y in room.get("measures", []):
+                beg_time = y.get("beg_time", "N/A")
+                step_time = y.get("step_time", "N/A")
+                value = y.get("value", [])
+                _LOGGER.debug(
+                    "Room %s energy data: beg_time=%s, step_time=%s, value=%s",
+                    room.get("id", "Unknown"),
+                    beg_time,
+                    step_time,
+                    value,
+                )
+
+                # Convert beg_time to human-readable format if it's a timestamp
+                beg_time_readable = format_timestamp_readable(beg_time)
+
+                for idx, energy in enumerate(value):
+                    _LOGGER.debug(
+                        "Room %s measurement %d: %s Wh",
+                        room.get("id", "Unknown"),
+                        idx,
+                        str(energy),
+                    )
+                    # For the time being, we are just going to sum all the energy values for all rooms
+                    energy_sum = sum(0 if x is None else x for x in energy)
+                    _LOGGER.debug(
+                        "Room %s energy data: time=%s, total_energy=%f Wh",
+                        room.get("id", "Unknown"),
+                        format_timestamp_readable(beg_time + idx * step_time),
+                        energy_sum,
+                    )
+                    # Here you can create energy measurement objects if needed
+                    measurement = MullerIntuisEnergyMeasurement(
+                        timestamp=beg_time + idx * step_time,
+                        energy_kwh=energy_sum / 1000.0,
+                        room_id=room.get("id", "Unknown"),
+                    )
+                    measurements.append(measurement)
+
+        _LOGGER.debug(
+            "Parsed %d energy measurements for home %s", len(measurements), home_id
+        )
+        return cls(
+            measurements=measurements,
+            start_date=start_date,
+            end_date=end_date,
+            home_id=home_id,
+        )
