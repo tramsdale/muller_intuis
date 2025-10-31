@@ -346,7 +346,7 @@ class MullerIntuisClimate(
                     self.room.name,
                 )
                 await self.coordinator.api.set_mode(
-                    self.home_id, self.room.room_id, mode_str
+                    self.room.home_id, self.room.room_id, mode_str
                 )
             else:
                 # Default behavior for entities without specific room
