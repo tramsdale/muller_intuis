@@ -207,7 +207,7 @@ class MullerIntuisEnergyCoordinator(DataUpdateCoordinator[MullerIntuisEnergyData
             _LOGGER,
             name=f"{DOMAIN}_energy_{config_coordinator.data.home_id}",
             update_interval=timedelta(
-                hours=6
+                hours=1
             ),  # Update every 6 hours for historic data
         )
         self.api = api
@@ -223,7 +223,7 @@ class MullerIntuisEnergyCoordinator(DataUpdateCoordinator[MullerIntuisEnergyData
         end_time = now.replace(minute=0, second=0, microsecond=0)
         end_date = round(end_time.timestamp())
         # Set start_date to 24 hours before end_date
-        start_date = round((end_time - timedelta(hours=26)).timestamp())
+        start_date = round((end_time - timedelta(hours=12)).timestamp())
 
         home_id = self.config_coordinator.data.home_id
         _LOGGER.debug(

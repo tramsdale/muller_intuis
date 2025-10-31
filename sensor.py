@@ -321,6 +321,11 @@ class MullerIntuisEnergyStatisticsHandler:
             )
             first_measurement_time = dt_util.as_local(first_measurement_time)
 
+            # Ensure both times are datetime objects for comparison
+            if isinstance(latest_sum_time, (int, float)):
+                latest_sum_time = datetime.fromtimestamp(latest_sum_time)
+                latest_sum_time = dt_util.as_local(latest_sum_time)
+
             if latest_sum_time < first_measurement_time:
                 cumulative_sum = latest_sum_value
                 _LOGGER.debug(
