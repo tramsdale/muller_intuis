@@ -211,7 +211,7 @@ class MullerIntuisEnergyMeasurement:
     """Model for energy measurement data point."""
 
     timestamp: str
-    energy_kwh: float
+    energy_wh: float
     room_id: str | None = None
     device_id: str | None = None
 
@@ -220,7 +220,7 @@ class MullerIntuisEnergyMeasurement:
         """Create energy measurement from API data."""
         return cls(
             timestamp=data.get("timestamp", ""),
-            energy_kwh=float(data.get("energy", 0.0)),
+            energy_wh=float(data.get("energy", 0.0)),
             room_id=data.get("room_id"),
             device_id=data.get("device_id"),
         )
@@ -279,7 +279,7 @@ class MullerIntuisEnergyData:
                     # Here you can create energy measurement objects if needed
                     measurement = MullerIntuisEnergyMeasurement(
                         timestamp=beg_time + idx * step_time,
-                        energy_kwh=energy_sum / 1000.0,
+                        energy_wh=energy_sum,
                         room_id=room.get("id", "Unknown"),
                     )
                     measurements.append(measurement)

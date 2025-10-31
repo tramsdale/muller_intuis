@@ -1,27 +1,22 @@
-"""Sensor platform for Muller Intuis integration."""
+"""Support for Muller Intuis sensors."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any
 
-from homeassistant.components.recorder.statistics import async_add_external_statistics
-from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
-    SensorStateClass,
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    statistics_during_period,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfEnergy
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
-from .coordinator import MullerIntuisEnergyCoordinator, MullerIntuisConfigCoordinator
-from .models import MullerIntuisEnergyData, MullerIntuisDevice, MullerIntuisRoom
+from .coordinator import MullerIntuisEnergyCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,63 +26,13 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Muller Intuis energy sensors from a config entry."""
-    _LOGGER.info(
-        "Starting sensor platform setup for entry %s",
-        entry.entry_id if entry else "YAML",
-    )
+    """Set up Muller Intuis sensors from a config entry."""
+    _LOGGER.debug("Setting up Muller Intuis sensor platform")
 
-    # Handle both YAML and config entry setups
-    if entry:
-        coordinators = hass.data[DOMAIN][entry.entry_id]
-    else:
-        coordinators = hass.data[DOMAIN].get("yaml_setup", {})
-
+    coordinators = entry.runtime_data
     _LOGGER.debug("Available coordinators: %s", list(coordinators.keys()))
 
-    config_coordinator: MullerIntuisConfigCoordinator = coordinators.get(
-        "config_coordinator"
-    )
-    energy_coordinator: MullerIntuisEnergyCoordinator = coordinators.get(
-        "energy_coordinator"
-    )
-
-    if not energy_coordinator:
-        _LOGGER.warning("No energy coordinator available, skipping energy sensor setup")
-        return
-
-    _LOGGER.info("Energy coordinator found, proceeding with sensor setup")
-
-    # Create room-based energy entities based on configuration data
-    entities = []
-    if config_coordinator and config_coordinator.data:
-        _LOGGER.debug("Config coordinator data available, checking rooms")
-        for room in config_coordinator.data.rooms.values():
-            # Check if room has any energy-measuring modules (assuming climate devices can measure energy)
-            has_energy_modules = True
-            if has_energy_modules:
-                _LOGGER.debug(
-                    "Creating energy sensor for room %s (%s)", room.room_id, room.name
-                )
-                entities.append(MullerIntuisEnergySensor(energy_coordinator, room))
-
-    # Create default home-level energy sensor if no room-specific sensors found
-    if not entities:
-        _LOGGER.info(
-            "No energy-capable rooms found, creating default home-level energy sensor"
-        )
-        entities.append(MullerIntuisEnergySensor(energy_coordinator, None))
-
-    _LOGGER.info("Adding %d energy sensor entities", len(entities))
-    async_add_entities(entities)
-
-    # Trigger an immediate energy coordinator refresh now that sensors are set up
-    # This ensures sensors receive data and can backfill statistics
-    if entities:
-        _LOGGER.info(
-            "Triggering immediate energy coordinator refresh after sensor setup"
-        )
-        await energy_coordinator.async_request_refresh()
+    await _setup_energy_statistics_handlers(hass, coordinators, async_add_entities)
 
 
 async def async_setup_platform(
@@ -97,122 +42,206 @@ async def async_setup_platform(
     discovery_info=None,
 ) -> None:
     """Set up Muller Intuis energy sensors from YAML platform discovery."""
+    from .const import DOMAIN
+
     _LOGGER.info("Starting sensor platform setup from YAML discovery")
 
-    # Call the main setup function with entry=None to indicate YAML setup
-    await async_setup_entry(hass, None, async_add_entities)
+    # For YAML setup, coordinators are stored in hass.data
+    if DOMAIN not in hass.data or "yaml_setup" not in hass.data[DOMAIN]:
+        _LOGGER.error("YAML setup coordinators not found in hass.data")
+        return
+
+    coordinators = hass.data[DOMAIN]["yaml_setup"]
+    _LOGGER.debug("Found YAML coordinators: %s", list(coordinators.keys()))
+
+    await _setup_energy_statistics_handlers(hass, coordinators, async_add_entities)
 
 
-class MullerIntuisEnergySensor(
-    CoordinatorEntity[MullerIntuisEnergyCoordinator], SensorEntity
-):
-    """Muller Intuis energy consumption sensor."""
+async def _setup_energy_statistics_handlers(
+    hass: HomeAssistant,
+    coordinators: dict,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up energy statistics handlers."""
 
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Check if energy coordinator is available
+    if "energy_coordinator" in coordinators:
+        _LOGGER.info("Energy coordinator found, setting up energy statistics handlers")
+        energy_coordinator = coordinators["energy_coordinator"]
+
+        # Setup statistics handlers directly (no entities)
+        if "config_coordinator" in coordinators:
+            config_coordinator = coordinators["config_coordinator"]
+            if config_coordinator.data and config_coordinator.data.rooms:
+                _LOGGER.debug(
+                    "Config coordinator data available, creating room energy statistics handlers"
+                )
+
+                # Create statistics handlers for each room, but don't add them as entities
+                for room_id, room in config_coordinator.data.rooms.items():
+                    _LOGGER.debug(
+                        "Creating energy statistics handler for room %s (%s)",
+                        room_id,
+                        room.name,
+                    )
+
+                    # Create the handler
+                    handler = MullerIntuisEnergyStatisticsHandler(
+                        hass=hass,
+                        coordinator=energy_coordinator,
+                        room_id=room_id,
+                        room_name=room.name,
+                        home_id=config_coordinator.data.home_id,
+                    )
+
+                    _LOGGER.debug(
+                        "Created energy statistics handler: %s", handler.unique_id
+                    )
+
+                    # Add coordinator listener for automatic updates
+                    energy_coordinator.async_add_listener(
+                        handler.handle_coordinator_update
+                    )
+
+                _LOGGER.info(
+                    "Setup %d energy statistics handlers",
+                    len(config_coordinator.data.rooms),
+                )
+
+                # Trigger immediate refresh if coordinator has data
+                if energy_coordinator.data:
+                    _LOGGER.info(
+                        "Energy coordinator has data, triggering statistics processing"
+                    )
+                    # Process statistics for all handlers
+                    for room_id, room in config_coordinator.data.rooms.items():
+                        handler = MullerIntuisEnergyStatisticsHandler(
+                            hass=hass,
+                            coordinator=energy_coordinator,
+                            room_id=room_id,
+                            room_name=room.name,
+                            home_id=config_coordinator.data.home_id,
+                        )
+                        handler.handle_coordinator_update()
+                else:
+                    _LOGGER.info(
+                        "Triggering immediate energy coordinator refresh for statistics"
+                    )
+                    await energy_coordinator.async_refresh()
+            else:
+                _LOGGER.warning(
+                    "Config coordinator has no room data for energy sensors"
+                )
+        else:
+            _LOGGER.warning("Config coordinator not available for energy sensors")
+    else:
+        _LOGGER.debug("Energy coordinator not available, skipping energy sensors")
+
+    # No regular sensor entities to add for now
+    async_add_entities([])
+
+
+class MullerIntuisEnergyStatisticsHandler:
+    """Handler for Muller Intuis energy statistics (no sensor entity, only energy dashboard integration)."""
 
     def __init__(
         self,
+        hass: HomeAssistant,
         coordinator: MullerIntuisEnergyCoordinator,
-        room: MullerIntuisRoom | None = None,
+        room_id: str,
+        room_name: str,
+        home_id: str,
     ) -> None:
-        """Initialize the energy sensor."""
-        super().__init__(coordinator)
-        self.room = room
+        """Initialize the energy statistics handler."""
+        self.hass = hass
+        self.coordinator = coordinator
+        self.room_id = room_id
+        self.room_name = room_name
+        self.home_id = home_id
+        self.unique_id = f"muller_intuis_energy_{home_id}_{room_id}"
+        self.name = f"Muller Intuis Energy {room_name}"
 
-        # Set proper entity naming following HA guidelines
-        if room:
-            home_id = coordinator.config_coordinator.data.home_id
-            self._attr_name = f"Muller Intuis Energy {room.name or room.room_id}"
-            self._attr_unique_id = f"muller_intuis_energy_{home_id}_{room.room_id}"
+        _LOGGER.debug("Created energy statistics handler: %s", self.unique_id)
 
-            # Set device info for proper device registry integration
-            self._attr_device_info = {
-                "identifiers": {(DOMAIN, f"energy_{home_id}_{room.room_id}")},
-                "name": f"Muller Intuis Energy {room.name or room.room_id}",
-                "manufacturer": "Muller Intuis",
-                "model": "Room Energy Monitor",
-            }
-        else:
-            # Home-level sensor
-            home_id = coordinator.config_coordinator.data.home_id
-            self._attr_name = f"Muller Intuis Energy {home_id}"
-            self._attr_unique_id = f"muller_intuis_energy_{home_id}"
+    async def _download_existing_statistics(
+        self, start_time: datetime, end_time: datetime
+    ) -> dict[str, list]:
+        """Download existing energy statistics from Home Assistant for the last 12 values.
 
-            # Set device info for proper device registry integration
-            self._attr_device_info = {
-                "identifiers": {(DOMAIN, f"energy_{home_id}")},
-                "name": f"Muller Intuis Energy {home_id}",
-                "manufacturer": "Muller Intuis",
-                "model": "Home Energy Monitor",
-            }
+        Args:
+            start_time: Start time for statistics query
+            end_time: End time for statistics query
 
-        # Check if coordinator already has data and backfill if so
-        if self.coordinator.data and self.coordinator.data.measurements:
-            _LOGGER.debug(
-                "Sensor %s found existing coordinator data, scheduling backfill",
-                self.unique_id,
-            )
-            # Schedule backfill after entity is fully initialized
-            self.coordinator.hass.async_create_task(self._async_initial_backfill())
+        Returns:
+            Dictionary with 'mean' and 'sum' statistics from HA database
 
-    @property
-    def native_value(self) -> float | None:
-        """Return the energy consumption value."""
-        if not self.coordinator.data or not self.coordinator.data.measurements:
-            return None
+        """
+        statistic_id = f"muller_intuis:{self.unique_id}"
 
-        # Return the total cumulative energy consumption
-        return sum(
-            measurement.energy_kwh for measurement in self.coordinator.data.measurements
+        _LOGGER.debug(
+            "Downloading existing statistics for %s from %s to %s",
+            statistic_id,
+            start_time,
+            end_time,
         )
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional state attributes."""
-        if not self.coordinator.data:
-            return {}
-
-        attributes = {
-            "measurement_count": len(self.coordinator.data.measurements),
-            "start_date": self.coordinator.data.start_date,
-            "end_date": self.coordinator.data.end_date,
-            "home_id": self.coordinator.data.home_id,
-        }
-
-        # Add room-specific attributes if this is a room-based sensor
-        if self.room:
-            attributes.update(
-                {
-                    "room_id": self.room.room_id,
-                    "room_name": self.room.name,
-                    "room_modules": self.room.modules,
-                }
+        try:
+            # Download statistics from Home Assistant database
+            instance = get_instance(self.hass)
+            existing_stats = await instance.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_time,
+                end_time,
+                {statistic_id},  # Set of statistic IDs
+                "hour",  # Period
+                None,  # Units (use default)
+                {"mean", "sum"},  # Types we want both mean and sum
             )
 
-        return attributes
+            if statistic_id in existing_stats:
+                stats_data = existing_stats[statistic_id]
+                _LOGGER.debug(
+                    "Found %d existing statistics for %s",
+                    len(stats_data),
+                    statistic_id,
+                )
+                return {
+                    "mean": [s for s in stats_data if "mean" in s],
+                    "sum": [s for s in stats_data if "sum" in s],
+                }
 
-    async def _async_initial_backfill(self) -> None:
-        """Perform initial update when coordinator already has data."""
-        _LOGGER.debug("Sensor %s performing initial update with existing data", self.unique_id)
-        self.async_write_ha_state()
+        except (OSError, ValueError) as err:
+            _LOGGER.warning(
+                "Failed to download existing statistics for %s: %s",
+                statistic_id,
+                err,
+            )
+
+        _LOGGER.debug("No existing statistics found for %s", statistic_id)
+        return {"mean": [], "sum": []}
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        _LOGGER.debug("Energy sensor %s received coordinator update", self.unique_id)
-        super()._handle_coordinator_update()
+    def handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator and backfill statistics."""
+        _LOGGER.debug(
+            "Energy statistics handler %s received coordinator update", self.unique_id
+        )
 
         if self.coordinator.data and self.coordinator.data.measurements:
-            _LOGGER.debug("Energy sensor %s has %d measurements, updating state",
-                         self.unique_id, len(self.coordinator.data.measurements))
+            _LOGGER.debug(
+                "Energy statistics handler %s has data, calling backfill",
+                self.unique_id,
+            )
+            # Backfill energy statistics to Home Assistant's energy dashboard
+            self._backfill_energy_statistics()
         else:
-            _LOGGER.debug("Energy sensor %s has no data yet", self.unique_id)
+            _LOGGER.debug(
+                "Energy statistics handler %s has no data yet", self.unique_id
+            )
 
     def _backfill_energy_statistics(self) -> None:
-        """Backfill historic energy data into Home Assistant statistics."""
+        """Backfill historic energy data into Home Assistant statistics with cumulative handling."""
         if not self.coordinator.data or not self.coordinator.data.measurements:
             _LOGGER.debug("No energy data available for statistics backfill")
             return
@@ -223,39 +252,108 @@ class MullerIntuisEnergySensor(
             len(self.coordinator.data.measurements),
         )
 
-        # Prepare metadata for external statistics
-        # For external statistics, use a custom statistic_id format
-        statistic_id = f"muller_intuis:{self.unique_id}"
-        metadata = {
-            "has_mean": True,
-            "has_sum": False,
-            "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
-            "statistic_id": statistic_id,
-            "name": self.name,
-            "source": DOMAIN,
-        }
+        # Filter measurements for this specific room and sort by timestamp
+        room_measurements = [
+            m for m in self.coordinator.data.measurements if m.room_id == self.room_id
+        ]
+        room_measurements.sort(key=lambda x: x.timestamp)
 
-        _LOGGER.debug("Statistics metadata: %s", metadata)
+        if not room_measurements:
+            _LOGGER.debug("No measurements found for room %s", self.room_id)
+            return
 
-        # Convert measurements to statistics format
-        statistics = []
-        for measurement in self.coordinator.data.measurements:
-            try:
-                # Convert local timestamp integer to datetime object
+        # Calculate time range for downloading existing statistics (last 12 hours + buffer)
+        start_time = datetime.fromtimestamp(room_measurements[0].timestamp)
+        end_time = datetime.fromtimestamp(room_measurements[-1].timestamp)
+
+        # Extend range to get more context for comparison
+        extended_start = start_time - timedelta(hours=12)
+        extended_end = end_time + timedelta(hours=1)
+
+        # Make timezone-aware
+        extended_start = dt_util.as_local(extended_start)
+        extended_end = dt_util.as_local(extended_end)
+
+        _LOGGER.debug(
+            "Downloading existing statistics from %s to %s for comparison",
+            extended_start,
+            extended_end,
+        )
+
+        # Download existing statistics from HA (async operation)
+        self.hass.async_create_task(
+            self._process_energy_with_comparison(
+                room_measurements, extended_start, extended_end
+            )
+        )
+
+    async def _process_energy_with_comparison(
+        self,
+        room_measurements: list,
+        extended_start: datetime,
+        extended_end: datetime,
+    ) -> None:
+        """Process energy measurements with comparison to existing HA statistics."""
+        existing_stats = await self._download_existing_statistics(
+            extended_start, extended_end
+        )
+
+        _LOGGER.debug(
+            "Downloaded %d existing mean stats and %d sum stats",
+            len(existing_stats["mean"]),
+            len(existing_stats["sum"]),
+        )
+
+        # Calculate cumulative sums from the per-hour API data
+        cumulative_sum = 0.0
+        api_statistics = []
+
+        # If we have existing sum statistics, start from the last known value
+        if existing_stats["sum"]:
+            # Find the latest sum statistic that's before our new data
+            latest_sum_stat = max(existing_stats["sum"], key=lambda x: x["start"])
+            latest_sum_time = latest_sum_stat["start"]
+            latest_sum_value = latest_sum_stat.get("sum", 0.0)
+
+            # Only use this as starting point if it's before our first measurement
+            first_measurement_time = datetime.fromtimestamp(
+                room_measurements[0].timestamp
+            )
+            first_measurement_time = dt_util.as_local(first_measurement_time)
+
+            if latest_sum_time < first_measurement_time:
+                cumulative_sum = latest_sum_value
                 _LOGGER.debug(
-                    "Processing measurement: timestamp=%s, energy=%s",
-                    measurement.timestamp,
-                    measurement.energy_kwh,
+                    "Starting cumulative sum from existing value: %f Wh at %s",
+                    cumulative_sum,
+                    latest_sum_time,
                 )
+
+        # Process each measurement to create both mean and cumulative sum statistics
+        for measurement in room_measurements:
+            try:
+                # Convert timestamp to datetime object
                 timestamp = datetime.fromtimestamp(measurement.timestamp)
-                # Make it timezone-aware using Home Assistant's default timezone
                 timestamp = dt_util.as_local(timestamp)
-                statistics.append(
+
+                # Add this hour's energy to cumulative sum
+                cumulative_sum += measurement.energy_wh
+
+                api_statistics.append(
                     {
                         "start": timestamp,
-                        "mean": measurement.energy_kwh,
+                        "mean": measurement.energy_wh,  # Per-hour consumption
+                        "sum": cumulative_sum,  # Cumulative consumption
                     }
                 )
+
+                _LOGGER.debug(
+                    "Processed measurement: timestamp=%s, mean=%f Wh, cumulative_sum=%f Wh",
+                    timestamp,
+                    measurement.energy_wh,
+                    cumulative_sum,
+                )
+
             except (ValueError, AttributeError) as err:
                 _LOGGER.warning(
                     "Failed to parse measurement timestamp %s: %s",
@@ -264,32 +362,122 @@ class MullerIntuisEnergySensor(
                 )
                 continue
 
-        if statistics:
+        # Compare overlapping ranges and flag changes
+        changes_detected = self._compare_overlapping_statistics(
+            existing_stats, api_statistics
+        )
+
+        if changes_detected:
             _LOGGER.info(
-                "Adding external statistics for %s with %d data points",
-                self.unique_id,
-                len(statistics),
+                "Detected changes in overlapping statistics, updating all statistics"
             )
-            async_add_external_statistics(self.hass, metadata, statistics)
-        else:
-            _LOGGER.warning("No valid statistics to add for %s", self.unique_id)
+
+        # Upload both mean and sum statistics to Home Assistant
+        if api_statistics:
+            await self._upload_dual_statistics(api_statistics)
+
+    def _compare_overlapping_statistics(
+        self, existing_stats: dict, api_statistics: list
+    ) -> bool:
+        """Compare overlapping statistics to detect changes.
+
+        Args:
+            existing_stats: Statistics from HA database
+            api_statistics: New statistics from API
+
+        Returns:
+            True if changes detected in overlapping ranges
+
+        """
+        changes_found = False
+
+        # Create lookup for existing statistics by timestamp
+        existing_mean_lookup = {stat["start"]: stat for stat in existing_stats["mean"]}
+        existing_sum_lookup = {stat["start"]: stat for stat in existing_stats["sum"]}
+
+        for api_stat in api_statistics:
+            timestamp = api_stat["start"]
+
+            # Check mean values
+            if timestamp in existing_mean_lookup:
+                existing_mean = existing_mean_lookup[timestamp].get("mean", 0.0)
+                api_mean = api_stat["mean"]
+
+                # Allow small floating point differences (1 Wh tolerance)
+                if abs(existing_mean - api_mean) > 1.0:
+                    _LOGGER.warning(
+                        "Mean value change detected at %s: existing=%f, api=%f",
+                        timestamp,
+                        existing_mean,
+                        api_mean,
+                    )
+                    changes_found = True
+
+            # Check sum values
+            if timestamp in existing_sum_lookup:
+                existing_sum = existing_sum_lookup[timestamp].get("sum", 0.0)
+                api_sum = api_stat["sum"]
+
+                # Allow small floating point differences (1 Wh tolerance)
+                if abs(existing_sum - api_sum) > 1.0:
+                    _LOGGER.warning(
+                        "Sum value change detected at %s: existing=%f, api=%f",
+                        timestamp,
+                        existing_sum,
+                        api_sum,
+                    )
+                    changes_found = True
+
+        return changes_found
+
+    async def _upload_dual_statistics(self, statistics: list) -> None:
+        """Upload both mean and sum statistics to Home Assistant.
+
+        Args:
+            statistics: List of statistics with both mean and sum values
+
+        """
+        statistic_id = f"muller_intuis:{self.unique_id}"
+
+        # Prepare metadata for external statistics (with both mean and sum)
+        metadata = {
+            "has_mean": True,
+            "has_sum": True,
+            "unit_of_measurement": UnitOfEnergy.WATT_HOUR,
+            "statistic_id": statistic_id,
+            "name": self.name,
+            "source": "muller_intuis",
+        }
+
+        _LOGGER.debug("Dual statistics metadata: %s", metadata)
+
+        _LOGGER.info(
+            "Adding external statistics for %s with %d data points (mean and sum)",
+            self.unique_id,
+            len(statistics),
+        )
+
+        # Upload statistics with both mean and sum
+        async_add_external_statistics(self.hass, metadata, statistics)
 
 
-async def backfill_energy(hass, name, energy_kwh: float, hours_ago: int):
+async def backfill_energy(
+    hass: HomeAssistant, name: str, energy_wh: float, hours_ago: int
+) -> None:
     """Legacy utility function for backfilling energy data."""
     timestamp = dt_util.utcnow() - timedelta(hours=hours_ago)
 
     metadata = {
         "has_mean": False,
         "has_sum": True,
-        "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+        "unit_of_measurement": UnitOfEnergy.WATT_HOUR,
         "statistic_id": f"sensor.{name.lower().replace(' ', '_')}",
     }
 
     statistics = [
         {
             "start": timestamp,
-            "sum": energy_kwh,
+            "sum": energy_wh,
         }
     ]
 

@@ -1,9 +1,9 @@
-"""API client for Muller Intuis heating system."""
+"""Muller Intuis API client."""
 
 import asyncio
+import json
 import logging
 import time
-import json
 from typing import Any
 
 import aiohttp
@@ -19,6 +19,8 @@ MEASURE_URL = "https://app.muller-intuitiv.net/api/gethomemeasure"
 
 # Cache expiry time in seconds (300 seconds)
 CACHE_EXPIRY = 300
+# Token expiry time in seconds (1 hour)
+TOKEN_EXPIRY = 3600
 
 
 class muller_intuisAPI:
@@ -48,6 +50,7 @@ class muller_intuisAPI:
         self._client_id = client_id
         self._client_secret = client_secret
         self._access_token = None
+        self._token_timestamp = 0
         self._homestatus_cached_data: dict[str, Any] = {}
         self._homestatus_cache_timestamp = 0
 
@@ -74,9 +77,26 @@ class muller_intuisAPI:
                 if not self._access_token:
                     _LOGGER.error("Failed to get access token: %s", data)
                 else:
+                    self._token_timestamp = time.time()
                     _LOGGER.info("Successfully authenticated with Muller Intuis API")
         except Exception:
             _LOGGER.exception("Authentication error")
+
+    async def _ensure_valid_token(self) -> None:
+        """Ensure we have a valid token, re-authenticating if expired."""
+        current_time = time.time()
+
+        # Check if we don't have a token or it's expired (1 hour = 3600 seconds)
+        if (
+            not self._access_token
+            or current_time - self._token_timestamp >= TOKEN_EXPIRY
+        ):
+            if self._access_token:
+                _LOGGER.info(
+                    "Access token expired (age: %.1f seconds), re-authenticating",
+                    current_time - self._token_timestamp,
+                )
+            await self.authenticate()
 
     async def get_homesdata(self) -> dict[str, Any]:
         """Get homesdata from API (no caching - called once during setup).
@@ -86,8 +106,7 @@ class muller_intuisAPI:
 
         """
         _LOGGER.debug("Fetching fresh homesdata from API")
-        if not self._access_token:
-            await self.authenticate()
+        await self._ensure_valid_token()
 
         headers = {
             "Authorization": f"Bearer {self._access_token}",
@@ -107,7 +126,7 @@ class muller_intuisAPI:
         """Get data for entity, using cached response if available.
 
         Args:
-            None
+            home_id: The ID of the home to get status for
 
         Returns:
             Dictionary containing entity data
@@ -128,8 +147,7 @@ class muller_intuisAPI:
 
         # Cache expired or empty, fetch fresh data
         _LOGGER.debug("Fetching fresh homestatus from API")
-        if not self._access_token:
-            await self.authenticate()
+        await self._ensure_valid_token()
 
         headers = {
             "Authorization": f"Bearer {self._access_token}",
@@ -174,7 +192,8 @@ class muller_intuisAPI:
         """Set temperature for entity.
 
         Args:
-            entity_name: Name of the entity
+            home_id: The ID of the home
+            room_id: The ID of the room
             temperature: Target temperature
 
         Returns:
@@ -182,6 +201,7 @@ class muller_intuisAPI:
 
         """
         _LOGGER.info("Setting temperature for %s to %.1f°C", room_id, temperature)
+        await self._ensure_valid_token()
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
@@ -223,6 +243,7 @@ class muller_intuisAPI:
 
         """
         _LOGGER.info("Setting HVAC mode for room %s to %s", room_id, mode)
+        await self._ensure_valid_token()
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
@@ -260,11 +281,14 @@ class muller_intuisAPI:
 
         Args:
             home_id: The home ID to get measurements for
+            roomlist: List of room IDs to get measurements for
+            bridgelist: List of bridge IDs corresponding to rooms
             start_date: Start timestamp as integer (Unix timestamp)
             end_date: End timestamp as integer (Unix timestamp)
 
         Returns:
             API response containing historic energy measurements
+
         """
         _LOGGER.debug(
             "Getting measurement data for home %s from %s to %s",
@@ -275,8 +299,7 @@ class muller_intuisAPI:
         _LOGGER.debug("roomlist: %s", roomlist)
         _LOGGER.debug("bridgelist: %s", bridgelist)
 
-        if not self._access_token:
-            await self.authenticate()
+        await self._ensure_valid_token()
 
         headers = {
             "Authorization": f"Bearer {self._access_token}",
