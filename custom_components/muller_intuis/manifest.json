@@ -1,8 +1,8 @@
-{
+d{
   "domain": "muller_intuis",
   "name": "Muller Intuis Integration",
   "documentation": "https://example.com",
-  "dependencies": [],
+  "dependencies": [recorder],
   "codeowners": [],
   "version": "0.1",
   "requirements": [],
