@@ -1,11 +1,11 @@
 {
   "domain": "muller_intuis",
   "name": "Muller Intuis Integration",
-  "documentation": "https://github.com/tramsdale/muller_intuis",
-  "version": "0.1.0",
+  "after_dependencies": ["recorder"],
+  "codeowners": [],
+  "documentation": "https://example.com",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "after_dependencies": ["recorder"],
   "requirements": [],
-  "codeowners": []
+  "version": "0.1.0"
 }
