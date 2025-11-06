@@ -6,5 +6,4 @@
   "codeowners": [],
   "version": "0.1",
   "requirements": [],
-  "platforms": ["climate", "sensor", "water_heater"]
 }
