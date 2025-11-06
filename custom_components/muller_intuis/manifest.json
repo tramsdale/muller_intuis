@@ -3,7 +3,7 @@
   "name": "Muller Intuis Integration",
   "after_dependencies": ["recorder"],
   "codeowners": [],
-  "documentation": "https://example.com",
+  "documentation": "https://github.com/tramsdale/muller_intuis",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": [],
